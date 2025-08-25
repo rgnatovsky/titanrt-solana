@@ -1,3 +1,6 @@
+mod connector;
+
+use crate::connector::SolanaConnectorExt;
 use anyhow::anyhow;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -6,179 +9,129 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 use titanrt::connector::errors::{StreamError, StreamResult};
-use titanrt::connector::{BaseConnector, Kind, RuntimeCtx, StreamDescriptor, StreamRunner, StreamSpawner, Venue};
+use titanrt::connector::{
+   BaseConnector, Kind, RuntimeCtx, StreamDescriptor, StreamRunner, StreamSpawner, Venue,
+};
 use titanrt::io::ringbuffer::RingSender;
 use titanrt::prelude::{BaseRx, BaseTx, TxPairExt};
 use titanrt::utils::{CancelToken, CorePickPolicy, CoreStats, StateCell, StateMarker};
 use tokio::runtime::Builder;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CompositeConfig {
-   pub default_max_cores: Option<usize>,
-   pub specific_cores: Vec<usize>,
-   pub with_core_stats: bool,
-}
-
-pub struct CompositeConnector {
-   pub(crate) config: CompositeConfig,
-   pub(crate) cancel_token: CancelToken,
-   pub(crate) core_stats: Option<Arc<CoreStats>>,
-}
-
-impl BaseConnector for CompositeConnector {
-   type Config = CompositeConfig;
-
-   fn init(
-      config: Self::Config,
-      cancel_token: CancelToken,
-      reserved_core_ids: Option<Vec<usize>>,
-   ) -> anyhow::Result<Self> {
-      let core_stats = if config.with_core_stats {
-         Some(CoreStats::new(
-            config.default_max_cores,
-            config.specific_cores.clone(),
-            reserved_core_ids.unwrap_or_default(),
-         )?)
-      } else {
-         None
-      };
-
-      Ok(Self {
-         config,
-         cancel_token,
-         core_stats,
-      })
-   }
-
-   fn name(&self) -> impl AsRef<str> + Display {
-      "CompositeConnector"
-   }
-
-   fn config(&self) -> &Self::Config {
-      &self.config
-   }
-
-   fn cancel_token(&self) -> &CancelToken {
-      &self.cancel_token
-   }
-
-   fn cores_stats(&self) -> Option<Arc<CoreStats>> {
-      self.core_stats.clone()
-   }
-}
-
 #[derive(Clone)]
 pub enum GeyserAction {
-   Subscribe(SubscribeRequest),
-   UnsubscribeAll,
+    Subscribe(SubscribeRequest),
+    UnsubscribeAll,
 }
 
 #[derive(Clone, Debug)]
 pub struct GeyserGrpcDescriptor {
-   pub endpoint: String,
-   pub auth_token: Option<String>,
-   pub max_pending_actions: Option<usize>,
-   pub max_pending_events: Option<usize>,
-   pub core_pick_policy: CorePickPolicy,
-   pub subscription: Option<SubscribeRequest>,
+    pub endpoint: String,
+    pub auth_token: Option<String>,
+    pub max_pending_actions: Option<usize>,
+    pub max_pending_events: Option<usize>,
+    pub core_pick_policy: CorePickPolicy,
+    pub subscription: Option<SubscribeRequest>,
 }
 
 impl GeyserGrpcDescriptor {
-   pub fn new(
-      endpoint: String,
-      auth_token: Option<String>,
-      max_pending_actions: Option<usize>,
-      max_pending_events: Option<usize>,
-      core_pick_policy: CorePickPolicy,
-   ) -> Self {
-      Self {
-         endpoint,
-         auth_token,
-         max_pending_actions,
-         max_pending_events,
-         core_pick_policy,
-         subscription: None,
-      }
-   }
+    pub fn new(
+        endpoint: String,
+        auth_token: Option<String>,
+        max_pending_actions: Option<usize>,
+        max_pending_events: Option<usize>,
+        core_pick_policy: CorePickPolicy,
+    ) -> Self {
+        Self {
+            endpoint,
+            auth_token,
+            max_pending_actions,
+            max_pending_events,
+            core_pick_policy,
+            subscription: None,
+        }
+    }
 
-   pub fn with_subscription(mut self, sub: SubscribeRequest) -> Self {
-      self.subscription = Some(sub);
-      self
-   }
+    pub fn with_subscription(mut self, sub: SubscribeRequest) -> Self {
+        self.subscription = Some(sub);
+        self
+    }
 }
 
 impl StreamDescriptor for GeyserGrpcDescriptor {
-   fn venue(&self) -> impl Venue {
-      "Solana"
-   }
+    fn venue(&self) -> impl Venue {
+        "Solana"
+    }
 
-   fn kind(&self) -> impl Kind {
-      "YellowstoneGrpc"
-   }
+    fn kind(&self) -> impl Kind {
+        "YellowstoneGrpc"
+    }
 
-   fn max_pending_actions(&self) -> Option<usize> {
-      self.max_pending_actions
-   }
+    fn max_pending_actions(&self) -> Option<usize> {
+        self.max_pending_actions
+    }
 
-   fn max_pending_events(&self) -> Option<usize> {
-      self.max_pending_events
-   }
+    fn max_pending_events(&self) -> Option<usize> {
+        self.max_pending_events
+    }
 
-   fn core_pick_policy(&self) -> Option<CorePickPolicy> {
-      Some(self.core_pick_policy)
-   }
+    fn core_pick_policy(&self) -> Option<CorePickPolicy> {
+        Some(self.core_pick_policy)
+    }
 
-   fn health_at_start(&self) -> bool {
-      false
-   }
+    fn health_at_start(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum GeyserEvent {
-   Raw(UpdateOneof),
+    Raw(UpdateOneof),
 }
 
-impl<E, S> StreamSpawner<GeyserGrpcDescriptor, E, S> for CompositeConnector
-   where
-      S: StateMarker,
-      E: BaseTx + TxPairExt,
-{}
-
-impl<E, S> StreamRunner<GeyserGrpcDescriptor, E, S> for CompositeConnector
-   where
-      S: StateMarker,
-      E: BaseTx,
+impl<C, E, S> StreamSpawner<GeyserGrpcDescriptor, E, S> for C
+where
+    C: BaseConnector + SolanaConnectorExt,
+    S: StateMarker,
+    E: BaseTx + TxPairExt,
 {
-   type Config = ();
-   type ActionTx = RingSender<GeyserAction>;
-   type RawEvent = GeyserEvent;
-   type Hook = fn(&Self::RawEvent, &mut E, &StateCell<S>);
+}
 
-   fn build_config(&mut self, _desc: &GeyserGrpcDescriptor) -> anyhow::Result<Self::Config> {
-      Ok(())
-   }
+impl<C, E, S> StreamRunner<GeyserGrpcDescriptor, E, S> for C
+where
+    C: BaseConnector + SolanaConnectorExt,
+    S: StateMarker,
+    E: BaseTx,
+{
+    type Config = ();
+    type ActionTx = RingSender<GeyserAction>;
+    type RawEvent = GeyserEvent;
+    type Hook = fn(&Self::RawEvent, &mut E, &StateCell<S>);
 
-   fn run(
-      mut ctx: RuntimeCtx<GeyserGrpcDescriptor, Self, E, S>,
-      hook: Self::Hook,
-   ) -> StreamResult<()> {
-      // Однопоточный рантайм ТОЛЬКО внутри run (внешний API остаётся синхронным)
-      let rt = Builder::new_current_thread()
-         .enable_time()
-         .enable_io()
-         .build()
-         .map_err(|e| StreamError::Unknown(anyhow!(e)))?;
+    fn build_config(&mut self, _desc: &GeyserGrpcDescriptor) -> anyhow::Result<Self::Config> {
+        Ok(())
+    }
 
-      let mut rng = SmallRng::from_os_rng();
-      let mut backoff_ms: u64 = 50;
-      let backoff_max_ms: u64 = 5_000;
-      let backoff_mul: f64 = 1.7;
+    fn run(
+        mut ctx: RuntimeCtx<GeyserGrpcDescriptor, Self, E, S>,
+        hook: Self::Hook,
+    ) -> StreamResult<()> {
+        // Однопоточный рантайм ТОЛЬКО внутри run (внешний API остаётся синхронным)
+        let rt = Builder::new_current_thread()
+            .enable_time()
+            .enable_io()
+            .build()
+            .map_err(|e| StreamError::Unknown(anyhow!(e)))?;
 
-      if !ctx.desc.health_at_start() {
-         ctx.health.set(true);
-      }
+        let mut rng = SmallRng::from_os_rng();
+        let mut backoff_ms: u64 = 50;
+        let backoff_max_ms: u64 = 5_000;
+        let backoff_mul: f64 = 1.7;
 
-      rt.block_on(async move {
+        if !ctx.desc.health_at_start() {
+            ctx.health.set(true);
+        }
+
+        rt.block_on(async move {
          'reconnect: loop {
             if ctx.cancel.is_cancelled() { break Ok(()); }
 
@@ -297,6 +250,6 @@ impl<E, S> StreamRunner<GeyserGrpcDescriptor, E, S> for CompositeConnector
          }
       })?;
 
-      Ok(())
-   }
+        Ok(())
+    }
 }
