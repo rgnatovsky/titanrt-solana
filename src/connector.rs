@@ -4,7 +4,6 @@ use std::sync::Arc;
 use titanrt::connector::BaseConnector;
 use titanrt::utils::{CancelToken, CoreStats};
 
-pub trait SolanaConnectorExt {}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SolanaConfig {
@@ -61,4 +60,3 @@ impl BaseConnector for SolanaConnector {
     }
 }
 
-impl SolanaConnectorExt for SolanaConnector {}
