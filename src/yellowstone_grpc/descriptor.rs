@@ -1,6 +1,6 @@
 use titanrt::connector::{Kind, StreamDescriptor, Venue};
-use titanrt::utils::CorePickPolicy;
 use titanrt::utils::backoff::ReconnectCfg;
+use titanrt::utils::CorePickPolicy;
 use yellowstone_grpc_proto::geyser::SubscribeRequest;
 
 pub const STREAM_VENUE: &str = "solana";

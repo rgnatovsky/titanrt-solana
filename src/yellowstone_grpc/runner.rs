@@ -2,22 +2,19 @@ use crate::connector::SolanaConnector;
 use crate::yellowstone_grpc::descriptor::GeyserGrpcDescriptor;
 use anyhow::anyhow;
 use futures_util::sink::SinkExt;
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use std::time::Duration;
 use titanrt::connector::errors::{StreamError, StreamResult};
-use titanrt::connector::{
-    Hook, HookArgs, IntoHook, RuntimeCtx, StreamDescriptor, StreamRunner, StreamSpawner,
-};
+use titanrt::connector::{Hook, HookArgs, IntoHook, RuntimeCtx, StreamRunner, StreamSpawner};
 use titanrt::io::ringbuffer::RingSender;
 use titanrt::prelude::{BaseRx, BaseTx, TxPairExt};
-use titanrt::utils::StateMarker;
 use titanrt::utils::backoff::Backoff;
+use titanrt::utils::StateMarker;
 use tokio::runtime::Builder;
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
 use yellowstone_grpc_proto::geyser::{SubscribeRequest, SubscribeRequestPing};
 use yellowstone_grpc_proto::tonic::codegen::tokio_stream::StreamExt;
+use yellowstone_grpc_proto::tonic::Status;
 
 #[derive(Clone)]
 pub enum GeyserAction {
@@ -28,6 +25,9 @@ pub enum GeyserAction {
 #[derive(Clone, Debug)]
 pub enum GeyserEvent {
     Raw(UpdateOneof),
+    ReadError(Status),
+    WriteError(String),
+    StreamEnd,
 }
 
 impl<E, S> StreamSpawner<GeyserGrpcDescriptor, E, S> for SolanaConnector
@@ -101,7 +101,6 @@ where
                             match m {
                                 Some(Ok(update)) => {
                                     match update.update_oneof {
-
                                         Some(UpdateOneof::Ping(_)) => {
                                             tracing::debug!("ping update");
                                             let _ = writer.send(
@@ -118,28 +117,46 @@ where
                                                     &ctx.state,
                                                     &ctx.desc,
                                                     &ctx.health
-                                                ));
+                                                )
+                                            );
                                         }
                                         None => {}
                                     }
                                 }
                                 Some(Err(status)) => {
                                     tracing::warn!("grpc stream error: {status}");
+                                    hook.call(
+                                        HookArgs::new(
+                                            &GeyserEvent::ReadError(status),
+                                            &mut ctx.event_tx,
+                                            &ctx.state,
+                                            &ctx.desc,
+                                            &ctx.health
+                                        )
+                                    );
                                     ctx.health.down();
                                     break 'session;
                                 }
                                 None => {
-                                    tracing::warn!("grpc stream ended");
+                                     hook.call(
+                                        HookArgs::new(
+                                            &GeyserEvent::StreamEnd,
+                                            &mut ctx.event_tx,
+                                            &ctx.state,
+                                            &ctx.desc,
+                                            &ctx.health
+                                        )
+                                    );
                                     ctx.health.down();
                                     break 'session;
                                 }
                             }
                         }
-
                         _ = tick.tick() => {
                             let mut sent = 0usize;
 
                             while let Ok(a) = ctx.action_rx.try_recv() {
+                                // TODO add a corr id to each action
                                 match a {
                                     GeyserAction::Subscribe(req) => {
                                         match writer.send(req).await {
@@ -148,7 +165,15 @@ where
                                                 if sent >= 4096 { break; }
                                             }
                                             Err(e) => {
-                                                tracing::warn!("subreq send failed: {e}");
+                                                hook.call(
+                                                    HookArgs::new(
+                                                        &GeyserEvent::WriteError(e.to_string()),
+                                                        &mut ctx.event_tx,
+                                                        &ctx.state,
+                                                        &ctx.desc,
+                                                        &ctx.health
+                                                    )
+                                                );
                                                 break 'session;
                                             }
                                         }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use titanrt::connector::BaseConnector;
 use titanrt::utils::{CancelToken, CoreStats};
 
+pub const SOLANA_CONNECTOR_NAME: &str = "solana_connector";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SolanaConfig {
@@ -19,7 +20,7 @@ pub struct SolanaConnector {
 }
 
 impl BaseConnector for SolanaConnector {
-    type MainConfig  = SolanaConfig;
+    type MainConfig = SolanaConfig;
 
     fn init(
         config: Self::MainConfig,
@@ -44,7 +45,7 @@ impl BaseConnector for SolanaConnector {
     }
 
     fn name(&self) -> impl AsRef<str> + Display {
-        "CompositeConnector"
+        SOLANA_CONNECTOR_NAME
     }
 
     fn config(&self) -> &Self::MainConfig {
@@ -59,4 +60,3 @@ impl BaseConnector for SolanaConnector {
         self.core_stats.clone()
     }
 }
-
